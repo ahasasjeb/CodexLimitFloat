@@ -8,6 +8,7 @@
 #include <shellscalingapi.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -81,6 +82,7 @@ const wchar_t* StatusText(StatusCode code) {
 struct UsageState {
     WindowLimit primary;    // 主要限额窗口（短窗口）
     WindowLimit secondary;  // 次要限额窗口（长窗口）
+    std::wstring plan_display; // ChatGPT 订阅层级显示名称
     StatusCode status = StatusCode::Loading;
     bool ok = false;        // 数据是否有效
 };
@@ -313,6 +315,31 @@ std::string_view ObjectForKey(std::string_view json, std::string_view key) {
         else if (c == '}' && --depth == 0) return json.substr(pos, i - pos + 1);
     }
     return {};
+}
+
+// 将字符串转为小写，用于订阅层级匹配
+std::string LowerAscii(std::string_view text) {
+    std::string out(text);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
+
+// 按官方 Codex CLI 的语义将原始 plan type 转为 UI 显示名称
+std::wstring PlanTypeDisplayName(std::string_view raw) {
+    std::string plan = LowerAscii(raw);
+    if (plan.empty()) return L"";
+    if (plan == "free") return L"Free";
+    if (plan == "go") return L"Go";
+    if (plan == "plus") return L"Plus";
+    if (plan == "pro") return L"Pro";
+    if (plan == "prolite") return L"Pro Lite";
+    if (plan == "team" || plan == "self_serve_business_usage_based") return L"Business";
+    if (plan == "business" || plan == "enterprise_cbp_usage_based" || plan == "enterprise" || plan == "hc") return L"Enterprise";
+    if (plan == "education" || plan == "edu") return L"Edu";
+
+    return Utf8ToWide(raw);
 }
 
 // 获取 Codex 配置目录路径
@@ -662,6 +689,7 @@ std::optional<UsageState> FetchUsage() {
 
     // 解析响应
     UsageState state;
+    state.plan_display = PlanTypeDisplayName(JsonStringValue(response->body, "plan_type"));
     std::string_view rate_limit = ObjectForKey(response->body, "rate_limit");
     FillLimit(state.primary, ObjectForKey(rate_limit, "primary_window"));
     FillLimit(state.secondary, ObjectForKey(rate_limit, "secondary_window"));
@@ -878,8 +906,14 @@ void Paint(HWND hwnd) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(23, 28, 38));
     SelectObject(dc, g_title_font);
+    std::wstring header_title = L"Codex 限额";
+    if (!snapshot.plan_display.empty()) {
+        header_title += L" (";
+        header_title += snapshot.plan_display;
+        header_title += L")";
+    }
     RECT header{S(14), S(8), client.right - S(90), S(28)};
-    DrawTextW(dc, L"Codex 限额", -1, &header, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    DrawTextW(dc, header_title.c_str(), -1, &header, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     // 绘制刷新按钮
     RECT refresh = RefreshButtonRect(client);
@@ -1111,7 +1145,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 } // namespace
 
 // 程序入口点
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+int WINAPI wWinMain(
+    _In_ HINSTANCE instance,
+    _In_opt_ HINSTANCE /*previous_instance*/,
+    _In_ LPWSTR /*command_line*/,
+    _In_ int show) {
     // 设置 DPI 感知模式
     SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
     g_dpi = GetDpiForSystem();
