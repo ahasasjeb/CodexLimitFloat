@@ -8,6 +8,7 @@
 #include <shellscalingapi.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -32,10 +33,45 @@ struct WindowLimit {
     long long reset_at = 0;
 };
 
+enum class StatusCode : std::uint8_t {
+    Loading,
+    Refreshing,
+    Updated,
+    NoWindow,
+    ReadFailed,
+    ThreadFailed,
+};
+
+constexpr const wchar_t* kStatusLoading = L"正在读取 Codex 限额...";
+constexpr const wchar_t* kStatusRefreshing = L"正在刷新...";
+constexpr const wchar_t* kStatusUpdated = L"已更新";
+constexpr const wchar_t* kStatusNoWindow = L"usage 返回中没有限额窗口";
+constexpr const wchar_t* kStatusReadFailed = L"读取失败：请确认已用 ChatGPT/Codex backend 登录";
+constexpr const wchar_t* kStatusThreadFailed = L"刷新线程启动失败";
+
+const wchar_t* StatusText(StatusCode code) {
+    switch (code) {
+    case StatusCode::Loading:
+        return kStatusLoading;
+    case StatusCode::Refreshing:
+        return kStatusRefreshing;
+    case StatusCode::Updated:
+        return kStatusUpdated;
+    case StatusCode::NoWindow:
+        return kStatusNoWindow;
+    case StatusCode::ReadFailed:
+        return kStatusReadFailed;
+    case StatusCode::ThreadFailed:
+        return kStatusThreadFailed;
+    default:
+        return kStatusLoading;
+    }
+}
+
 struct UsageState {
     WindowLimit primary;
     WindowLimit secondary;
-    std::wstring status = L"正在读取 Codex 限额...";
+    StatusCode status = StatusCode::Loading;
     bool ok = false;
 };
 
@@ -539,7 +575,7 @@ std::optional<UsageState> FetchUsage() {
     FillLimit(state.primary, ObjectForKey(rate_limit, "primary_window"));
     FillLimit(state.secondary, ObjectForKey(rate_limit, "secondary_window"));
     state.ok = state.primary.present || state.secondary.present;
-    state.status = state.ok ? L"已更新" : L"usage 返回中没有限额窗口";
+    state.status = state.ok ? StatusCode::Updated : StatusCode::NoWindow;
     return state;
 }
 
@@ -550,7 +586,7 @@ DWORD WINAPI RefreshThread(LPVOID) {
         message->state = *result;
     } else {
         message->state.ok = false;
-        message->state.status = L"读取失败：请确认已用 ChatGPT/Codex backend 登录";
+        message->state.status = StatusCode::ReadFailed;
     }
     EnterCriticalSection(&g_state_lock);
     bool can_post = !g_shutting_down && g_hwnd != nullptr && IsWindow(g_hwnd);
@@ -571,7 +607,7 @@ void StartRefresh() {
         return;
     }
     g_refresh_running = true;
-    g_state.status = L"正在刷新...";
+    g_state.status = StatusCode::Refreshing;
     LeaveCriticalSection(&g_state_lock);
     InvalidateRect(g_hwnd, nullptr, TRUE);
     HANDLE thread = CreateThread(nullptr, 0, RefreshThread, nullptr, 0, nullptr);
@@ -581,7 +617,7 @@ void StartRefresh() {
         g_refresh_thread = thread;
     } else {
         g_refresh_running = false;
-        g_state.status = L"刷新线程启动失败";
+        g_state.status = StatusCode::ThreadFailed;
     }
     LeaveCriticalSection(&g_state_lock);
     if (!thread) InvalidateRect(g_hwnd, nullptr, TRUE);
@@ -597,14 +633,21 @@ void TriggerManualRefresh(HWND hwnd) {
     ResetRefreshTimer(hwnd);
 }
 
-std::wstring WindowLabel(const WindowLimit& limit) {
+const wchar_t* FormatWindowLabel(const WindowLimit& limit, const wchar_t* fallback_title, wchar_t* buffer, size_t buffer_len) {
+    if (!limit.present) return fallback_title;
     int seconds = limit.window_seconds;
-    if (seconds >= 3600 && seconds % 3600 == 0) return std::to_wstring(seconds / 3600) + L" 小时使用限额";
-    if (seconds >= 60) return std::to_wstring(seconds / 60) + L" 分钟使用限额";
+    if (seconds >= 3600 && seconds % 3600 == 0) {
+        swprintf_s(buffer, buffer_len, L"%d 小时使用限额", seconds / 3600);
+        return buffer;
+    }
+    if (seconds >= 60) {
+        swprintf_s(buffer, buffer_len, L"%d 分钟使用限额", seconds / 60);
+        return buffer;
+    }
     return L"使用限额";
 }
 
-std::wstring FormatResetTime(long long unix_seconds) {
+const wchar_t* FormatResetTime(long long unix_seconds, wchar_t* buffer, size_t buffer_len) {
     if (unix_seconds <= 0) return L"--";
     FILETIME ft{};
     ULONGLONG ticks = (static_cast<ULONGLONG>(unix_seconds) + 11644473600ULL) * 10000000ULL;
@@ -615,13 +658,12 @@ std::wstring FormatResetTime(long long unix_seconds) {
     FileTimeToLocalFileTime(&ft, &local_ft);
     FileTimeToSystemTime(&local_ft, &st);
     GetLocalTime(&now);
-    wchar_t buf[80]{};
     if (st.wYear == now.wYear && st.wMonth == now.wMonth && st.wDay == now.wDay) {
-        swprintf_s(buf, L"%02d:%02d", st.wHour, st.wMinute);
+        swprintf_s(buffer, buffer_len, L"%02d:%02d", st.wHour, st.wMinute);
     } else {
-        swprintf_s(buf, L"%d年%d月%d日 %d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
+        swprintf_s(buffer, buffer_len, L"%d年%d月%d日 %d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute);
     }
-    return buf;
+    return buffer;
 }
 
 void RoundRectPath(HDC dc, RECT r, int radius) {
@@ -653,27 +695,32 @@ void DrawLimitRow(HDC dc, const RECT& rect, const WindowLimit& limit, const wcha
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(106, 119, 137));
     SelectObject(dc, g_title_font);
-    std::wstring title = limit.present ? WindowLabel(limit) : fallback_title;
+    wchar_t title_buf[32]{};
+    const wchar_t* title = FormatWindowLabel(limit, fallback_title, title_buf, ARRAYSIZE(title_buf));
     RECT title_rect{rect.left, rect.top, rect.right - S(82), rect.top + S(18)};
-    DrawTextW(dc, title.c_str(), -1, &title_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawTextW(dc, title, -1, &title_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     SelectObject(dc, g_small_font);
-    std::wstring reset = limit.present ? FormatResetTime(limit.reset_at) : L"--";
+    wchar_t reset_buf[64]{};
+    const wchar_t* reset = FormatResetTime(limit.present ? limit.reset_at : 0, reset_buf, ARRAYSIZE(reset_buf));
     RECT reset_rect{rect.right - S(108), rect.top, rect.right, rect.top + S(18)};
-    DrawTextW(dc, reset.c_str(), -1, &reset_rect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawTextW(dc, reset, -1, &reset_rect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
     SetTextColor(dc, RGB(0, 0, 0));
     SelectObject(dc, g_value_font);
-    std::wstring value = limit.present ? std::to_wstring(std::max(0, 100 - limit.used_percent)) + L"%" : L"--";
+    int remaining = limit.present ? std::clamp(100 - limit.used_percent, 0, 100) : 0;
+    wchar_t value_buf[8]{};
+    const wchar_t* value = limit.present
+                               ? (swprintf_s(value_buf, ARRAYSIZE(value_buf), L"%d%%", remaining), value_buf)
+                               : L"--";
     RECT value_rect{rect.left, rect.top + S(21), rect.left + S(82), rect.top + S(53)};
-    DrawTextW(dc, value.c_str(), -1, &value_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    DrawTextW(dc, value, -1, &value_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
     SetTextColor(dc, RGB(78, 88, 104));
     SelectObject(dc, g_title_font);
     RECT remain_rect{rect.left + S(84), rect.top + S(28), rect.left + S(124), rect.top + S(48)};
     DrawTextW(dc, L"剩余", -1, &remain_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-    int remaining = limit.present ? std::clamp(100 - limit.used_percent, 0, 100) : 0;
     RECT bar{rect.left + S(126), rect.top + S(36), rect.right, rect.top + S(44)};
     DrawProgressBar(dc, bar, remaining);
 }
@@ -743,7 +790,7 @@ void Paint(HWND hwnd) {
     SetTextColor(dc, snapshot.ok ? RGB(106, 119, 137) : RGB(170, 70, 70));
     SelectObject(dc, g_small_font);
     RECT status{S(14), client.bottom - S(20), client.right - S(14), client.bottom - S(4)};
-    DrawTextW(dc, snapshot.status.c_str(), -1, &status, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    DrawTextW(dc, StatusText(snapshot.status), -1, &status, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     EndPaint(hwnd, &ps);
 }
 
