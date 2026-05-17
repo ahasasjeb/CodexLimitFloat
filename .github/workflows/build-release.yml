@@ -1,0 +1,68 @@
+name: Build and release
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  PROJECT_FILE: ChatGPT codex限额小工具.vcxproj
+  CONFIGURATION: Release
+  PLATFORM: x64
+  ARTIFACT_NAME: ChatGPT-codex-limit-tool
+
+jobs:
+  build:
+    name: Build Release x64
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: >
+          msbuild "$env:PROJECT_FILE"
+          /m
+          /p:Configuration=$env:CONFIGURATION
+          /p:Platform=$env:PLATFORM
+          /p:PlatformToolset=v145
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE "$env:PLATFORM\$env:CONFIGURATION"
+          $packageDir = Join-Path $env:RUNNER_TEMP "package"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          Copy-Item -LiteralPath (Join-Path $outputDir "ChatGPT codex限额小工具.exe") -Destination $packageDir
+          Copy-Item -LiteralPath (Join-Path $outputDir "ChatGPT codex限额小工具.pdb") -Destination $packageDir -ErrorAction SilentlyContinue
+
+          $zipPath = Join-Path $env:RUNNER_TEMP "$env:ARTIFACT_NAME-$env:GITHUB_SHA.zip"
+          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ env.ARTIFACT_NAME }}-${{ github.sha }}.zip
+          if-no-files-found: error
+
+      - name: Create release for this commit
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.sha }}
+          name: Build ${{ github.sha }}
+          target_commitish: ${{ github.sha }}
+          files: ${{ runner.temp }}/${{ env.ARTIFACT_NAME }}-${{ github.sha }}.zip
+          prerelease: true
+          overwrite_files: true
+          generate_release_notes: true
