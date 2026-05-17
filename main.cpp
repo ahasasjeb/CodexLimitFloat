@@ -27,6 +27,10 @@ namespace
     constexpr UINT kRefreshIntervalMs = 60 * 1000;
     // 程序启动后首次刷新的延迟（毫秒）
     constexpr UINT kInitialRefreshDelayMs = 200;
+    constexpr UINT_PTR kGuideTimer = 2;
+    constexpr UINT kGuideFrameMs = 16;
+    constexpr int kGuideSteps = 16;
+    constexpr UINT kExitCommand = 1001;
     // HTTP 请求超时时间（毫秒）
     constexpr int kHttpTimeoutMs = 3000;
     // 自定义消息：刷新完成通知
@@ -149,6 +153,23 @@ namespace
     int g_shape_width = -1;
     int g_shape_height = -1;
     int g_shape_radius = -1;
+    bool g_dark_mode = false;
+    HWND g_guide_hwnd = nullptr;
+    POINT g_guide_start{};
+    POINT g_guide_end{};
+    int g_guide_step = 0;
+
+    struct Palette
+    {
+        COLORREF bg, panel, border, title, text, muted, soft_text, button, divider, bar, ok, bad, guide;
+    };
+
+    Palette P()
+    {
+        return g_dark_mode
+                   ? Palette{RGB(19, 21, 26), RGB(31, 34, 42), RGB(62, 68, 82), RGB(236, 239, 244), RGB(245, 247, 250), RGB(165, 174, 188), RGB(196, 203, 214), RGB(42, 47, 58), RGB(55, 61, 74), RGB(67, 75, 91), RGB(74, 222, 128), RGB(248, 113, 113), RGB(96, 165, 250)}
+                   : Palette{RGB(245, 246, 248), RGB(255, 255, 255), RGB(224, 228, 235), RGB(23, 28, 38), RGB(0, 0, 0), RGB(106, 119, 137), RGB(78, 88, 104), RGB(248, 250, 252), RGB(238, 240, 244), RGB(231, 233, 238), RGB(34, 197, 94), RGB(239, 68, 68), RGB(37, 99, 235)};
+    }
 
     // 根据 UI 缩放比例调整数值
     // value: 原始值
@@ -169,6 +190,14 @@ namespace
     void UpdateEffectiveScale()
     {
         g_ui_scale = std::max(45, MulDiv(DpiScale(g_resolution_scale), kCompactScalePercent, 100));
+    }
+
+    bool QueryDarkMode()
+    {
+        DWORD value = 1, size = sizeof(value);
+        RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
+        return value == 0;
     }
 
     // 将 UTF-8 字符串转换为宽字符串（UTF-16）
@@ -1027,22 +1056,24 @@ namespace
     // 绘制进度条
     void DrawProgressBar(HDC dc, RECT bar, int remaining)
     {
+        Palette p = P();
         // 绘制背景
-        FillRoundRect(dc, bar, RGB(231, 233, 238), RGB(231, 233, 238), 6);
+        FillRoundRect(dc, bar, p.bar, p.bar, 6);
         // 绘制填充部分
         RECT fill = bar;
         fill.right = fill.left + MulDiv(fill.right - fill.left, std::clamp(remaining, 0, 100), 100);
         if (fill.right > fill.left)
         {
-            FillRoundRect(dc, fill, RGB(34, 197, 94), RGB(34, 197, 94), 6);
+            FillRoundRect(dc, fill, p.ok, p.ok, 6);
         }
     }
 
     // 绘制单个限额行
     void DrawLimitRow(HDC dc, const RECT &rect, const WindowLimit &limit, const wchar_t *fallback_title)
     {
+        Palette p = P();
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(106, 119, 137));
+        SetTextColor(dc, p.muted);
         SelectObject(dc, g_title_font);
         // 绘制窗口标签
         wchar_t title_buf[32]{};
@@ -1058,7 +1089,7 @@ namespace
         DrawTextW(dc, reset, -1, &reset_rect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
         // 绘制剩余百分比数值
-        SetTextColor(dc, RGB(0, 0, 0));
+        SetTextColor(dc, p.text);
         SelectObject(dc, g_value_font);
         int remaining = limit.present ? std::clamp(100 - limit.used_percent, 0, 100) : 0;
         wchar_t value_buf[8]{};
@@ -1069,7 +1100,7 @@ namespace
         DrawTextW(dc, value, -1, &value_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
         // 绘制"剩余"标签
-        SetTextColor(dc, RGB(78, 88, 104));
+        SetTextColor(dc, p.soft_text);
         SelectObject(dc, g_title_font);
         RECT remain_rect{rect.left + S(84), rect.top + S(28), rect.left + S(124), rect.top + S(48)};
         DrawTextW(dc, L"剩余", -1, &remain_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
@@ -1098,9 +1129,10 @@ namespace
         HDC dc = BeginPaint(hwnd, &ps);
         RECT client{};
         GetClientRect(hwnd, &client);
+        Palette p = P();
 
         // 填充背景色
-        FillSolidRect(dc, client, RGB(245, 246, 248));
+        FillSolidRect(dc, client, p.bg);
 
         // 获取当前状态快照
         UsageState snapshot;
@@ -1110,11 +1142,11 @@ namespace
 
         // 绘制主面板（圆角白色背景）
         RECT panel{0, 0, client.right, client.bottom};
-        FillRoundRect(dc, panel, RGB(255, 255, 255), RGB(224, 228, 235), 18);
+        FillRoundRect(dc, panel, p.panel, p.border, 18);
 
         // 绘制标题
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(23, 28, 38));
+        SetTextColor(dc, p.title);
         SelectObject(dc, g_title_font);
         std::wstring header_title = L"Codex 限额";
         if (!snapshot.plan_display.empty())
@@ -1128,13 +1160,13 @@ namespace
 
         // 绘制刷新按钮
         RECT refresh = RefreshButtonRect(client);
-        FillRoundRect(dc, refresh, RGB(248, 250, 252), RGB(224, 228, 235), 10);
-        SetTextColor(dc, RGB(78, 88, 104));
+        FillRoundRect(dc, refresh, p.button, p.border, 10);
+        SetTextColor(dc, p.soft_text);
         SelectObject(dc, g_small_font);
         DrawTextW(dc, L"刷新", -1, &refresh, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
         // 绘制状态指示点（绿色表示正常，红色表示异常）
-        COLORREF dot_color = snapshot.ok ? RGB(34, 197, 94) : RGB(239, 68, 68);
+        COLORREF dot_color = snapshot.ok ? p.ok : p.bad;
         HGDIOBJ old_brush = SelectObject(dc, GetStockObject(DC_BRUSH));
         HGDIOBJ old_pen = SelectObject(dc, GetStockObject(DC_PEN));
         SetDCBrushColor(dc, dot_color);
@@ -1145,7 +1177,7 @@ namespace
 
         // 绘制分隔线
         old_pen = SelectObject(dc, GetStockObject(DC_PEN));
-        SetDCPenColor(dc, RGB(238, 240, 244));
+        SetDCPenColor(dc, p.divider);
         MoveToEx(dc, S(14), S(32), nullptr);
         LineTo(dc, client.right - S(14), S(32));
         MoveToEx(dc, S(14), S(88), nullptr);
@@ -1160,7 +1192,7 @@ namespace
 
         // 绘制状态文本
         SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, snapshot.ok ? RGB(106, 119, 137) : RGB(170, 70, 70));
+        SetTextColor(dc, snapshot.ok ? p.muted : p.bad);
         SelectObject(dc, g_small_font);
         RECT status{S(14), client.bottom - S(20), client.right - S(14), client.bottom - S(4)};
         DrawTextW(dc, StatusText(snapshot.status), -1, &status, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -1230,6 +1262,103 @@ namespace
         else
         {
             DeleteObject(region);
+        }
+    }
+
+    void ShowExitMenu(HWND hwnd, POINT screen)
+    {
+        HMENU menu = CreatePopupMenu();
+        if (!menu)
+            return;
+        AppendMenuW(menu, MF_STRING, kExitCommand, L"退出");
+        SetForegroundWindow(hwnd);
+        UINT cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, screen.x, screen.y, 0, hwnd, nullptr);
+        DestroyMenu(menu);
+        if (cmd == kExitCommand)
+            DestroyWindow(hwnd);
+    }
+
+    LRESULT CALLBACK GuideWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+    {
+        switch (msg)
+        {
+        case WM_CREATE:
+            SetTimer(hwnd, kGuideTimer, kGuideFrameMs, nullptr);
+            return 0;
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_TIMER:
+            if (wparam == kGuideTimer && ++g_guide_step >= kGuideSteps)
+                DestroyWindow(hwnd);
+            else
+                InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        case WM_PAINT:
+        {
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            FillSolidRect(dc, client, RGB(0, 0, 0));
+            int x = g_guide_start.x + MulDiv(g_guide_end.x - g_guide_start.x, g_guide_step, kGuideSteps - 1);
+            int y = g_guide_start.y + MulDiv(g_guide_end.y - g_guide_start.y, g_guide_step, kGuideSteps - 1);
+            HPEN pen = CreatePen(PS_SOLID, std::max(2, DpiScale(2)), P().guide);
+            HGDIOBJ old_pen = SelectObject(dc, pen);
+            MoveToEx(dc, g_guide_start.x, g_guide_start.y, nullptr);
+            LineTo(dc, x, y);
+            SelectObject(dc, old_pen);
+            DeleteObject(pen);
+            HBRUSH brush = CreateSolidBrush(P().guide);
+            HGDIOBJ old_brush = SelectObject(dc, brush);
+            Ellipse(dc, x - S(4), y - S(4), x + S(4), y + S(4));
+            SelectObject(dc, old_brush);
+            DeleteObject(brush);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DESTROY:
+            if (g_guide_hwnd == hwnd)
+                g_guide_hwnd = nullptr;
+            return 0;
+        default:
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+    }
+
+    void StartGuideAnimation(HINSTANCE instance, const RECT &target)
+    {
+        static bool registered = false;
+        if (!registered)
+        {
+            WNDCLASSW wc{};
+            wc.lpfnWndProc = GuideWndProc;
+            wc.hInstance = instance;
+            wc.lpszClassName = L"CodexLimitGuideWindow";
+            registered = RegisterClassW(&wc) != 0;
+        }
+        if (!registered)
+            return;
+
+        if (g_guide_hwnd)
+            DestroyWindow(g_guide_hwnd);
+        POINT from{};
+        GetCursorPos(&from);
+        POINT to{(target.left + target.right) / 2, (target.top + target.bottom) / 2};
+        int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        g_guide_start = {from.x - left, from.y - top};
+        g_guide_end = {to.x - left, to.y - top};
+        g_guide_step = 0;
+        g_guide_hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
+                                       L"CodexLimitGuideWindow", L"", WS_POPUP, left, top, width, height,
+                                       nullptr, nullptr, instance, nullptr);
+        if (g_guide_hwnd)
+        {
+            SetLayeredWindowAttributes(g_guide_hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+            ShowWindow(g_guide_hwnd, SW_SHOWNOACTIVATE);
+            UpdateWindow(g_guide_hwnd);
         }
     }
 
@@ -1319,10 +1448,28 @@ namespace
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
+        case WM_SETTINGCHANGE:
+        case WM_THEMECHANGED:
+        {
+            bool dark = QueryDarkMode();
+            if (dark != g_dark_mode)
+            {
+                g_dark_mode = dark;
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
         case WM_SIZE:
             // 窗口大小改变：更新形状
             ApplyWindowShape(hwnd);
             return 0;
+        case WM_COMMAND:
+            if (LOWORD(wparam) == kExitCommand)
+            {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
         case WM_TIMER:
             // 定时器：自动刷新
             if (wparam == kRefreshTimer)
@@ -1347,10 +1494,29 @@ namespace
             SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
             return 0;
         }
-        case WM_RBUTTONUP:
-            // 鼠标右键按下：关闭窗口
-            DestroyWindow(hwnd);
+        case WM_CONTEXTMENU:
+        {
+            POINT pt{};
+            if (GET_X_LPARAM(lparam) == -1 && GET_Y_LPARAM(lparam) == -1)
+            {
+                RECT rect{};
+                GetWindowRect(hwnd, &rect);
+                pt = {rect.left + S(16), rect.top + S(16)};
+            }
+            else
+            {
+                pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            }
+            ShowExitMenu(hwnd, pt);
             return 0;
+        }
+        case WM_RBUTTONUP:
+        {
+            POINT pt{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+            ClientToScreen(hwnd, &pt);
+            ShowExitMenu(hwnd, pt);
+            return 0;
+        }
         case WM_PAINT:
             // 绘制窗口
             Paint(hwnd);
@@ -1421,6 +1587,7 @@ int WINAPI wWinMain(
     int reference_width = std::min(work_width, MulDiv(work_height, 16, 9));
     g_resolution_scale = std::clamp(MulDiv(reference_width, 100, 1366), 85, 125);
     UpdateEffectiveScale();
+    g_dark_mode = QueryDarkMode();
 
     // 初始化临界区
     InitializeCriticalSection(&g_state_lock);
@@ -1448,6 +1615,9 @@ int WINAPI wWinMain(
         return 1;
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
+    RECT window_rect{};
+    GetWindowRect(g_hwnd, &window_rect);
+    StartGuideAnimation(instance, window_rect);
 
     // 消息循环
     MSG msg{};
