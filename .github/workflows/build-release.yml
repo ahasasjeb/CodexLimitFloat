@@ -51,6 +51,5 @@ jobs:
           name: Build ${{ github.sha }}
           target_commitish: ${{ github.sha }}
           files: ${{ github.workspace }}/${{ env.PLATFORM }}/${{ env.CONFIGURATION }}/${{ env.EXE_NAME }}
-          prerelease: true
           overwrite_files: true
           generate_release_notes: true
