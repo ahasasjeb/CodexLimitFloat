@@ -14,6 +14,7 @@ env:
   CONFIGURATION: Release
   PLATFORM: x64
   ARTIFACT_NAME: ChatGPT-codex-limit-tool
+  EXE_NAME: ChatGPT codex限额小工具.exe
 
 jobs:
   build:
@@ -35,24 +36,11 @@ jobs:
           /p:Platform=$env:PLATFORM
           /p:PlatformToolset=v145
 
-      - name: Package
-        shell: pwsh
-        run: |
-          $outputDir = Join-Path $env:GITHUB_WORKSPACE "$env:PLATFORM\$env:CONFIGURATION"
-          $packageDir = Join-Path $env:RUNNER_TEMP "package"
-          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
-
-          Copy-Item -LiteralPath (Join-Path $outputDir "ChatGPT codex限额小工具.exe") -Destination $packageDir
-          Copy-Item -LiteralPath (Join-Path $outputDir "ChatGPT codex限额小工具.pdb") -Destination $packageDir -ErrorAction SilentlyContinue
-
-          $zipPath = Join-Path $env:RUNNER_TEMP "$env:ARTIFACT_NAME-$env:GITHUB_SHA.zip"
-          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Force
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}-${{ github.sha }}
-          path: ${{ runner.temp }}/${{ env.ARTIFACT_NAME }}-${{ github.sha }}.zip
+          path: ${{ github.workspace }}/${{ env.PLATFORM }}/${{ env.CONFIGURATION }}/${{ env.EXE_NAME }}
           if-no-files-found: error
 
       - name: Create release for this commit
@@ -62,7 +50,7 @@ jobs:
           tag_name: build-${{ github.sha }}
           name: Build ${{ github.sha }}
           target_commitish: ${{ github.sha }}
-          files: ${{ runner.temp }}/${{ env.ARTIFACT_NAME }}-${{ github.sha }}.zip
+          files: ${{ github.workspace }}/${{ env.PLATFORM }}/${{ env.CONFIGURATION }}/${{ env.EXE_NAME }}
           prerelease: true
           overwrite_files: true
           generate_release_notes: true
