@@ -77,8 +77,7 @@ const wchar_t* StatusText(StatusCode code) {
         return kStatusLoading;
     }
 }
-
-// 使用状态结构体，包含主窗口和次窗口的限额信息
+// 使用状态结构体，包含短/长两个时间窗口的限额信息
 struct UsageState {
     WindowLimit primary;    // 主要限额窗口（短窗口）
     WindowLimit secondary;  // 次要限额窗口（长窗口）
@@ -719,7 +718,7 @@ void StartRefresh() {
         g_state.status = StatusCode::ThreadFailed;
     }
     LeaveCriticalSection(&g_state_lock);
-    if (!thread) InvalidateRect(hwnd, nullptr, TRUE);
+    if (!thread) InvalidateRect(g_hwnd, nullptr, TRUE);  
 }
 
 // 重置刷新定时器
@@ -976,7 +975,7 @@ void ApplyWindowShape(HWND hwnd) {
     }
 }
 
-// 通知窗口过程（用于系统托盘图标消息处理）
+// 托盘通知用的消息窗口过程（仅转发默认处理）
 LRESULT CALLBACK NotifyWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
