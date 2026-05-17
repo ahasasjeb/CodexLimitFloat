@@ -7,6 +7,8 @@
 #include <shellapi.h>
 #include <shellscalingapi.h>
 
+#include "startup_animation.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -27,9 +29,6 @@ namespace
     constexpr UINT kRefreshIntervalMs = 60 * 1000;
     // 程序启动后首次刷新的延迟（毫秒）
     constexpr UINT kInitialRefreshDelayMs = 200;
-    constexpr UINT_PTR kGuideTimer = 2;
-    constexpr UINT kGuideFrameMs = 16;
-    constexpr int kGuideSteps = 16;
     constexpr UINT kExitCommand = 1001;
     // HTTP 请求超时时间（毫秒）
     constexpr int kHttpTimeoutMs = 3000;
@@ -154,10 +153,6 @@ namespace
     int g_shape_height = -1;
     int g_shape_radius = -1;
     bool g_dark_mode = false;
-    HWND g_guide_hwnd = nullptr;
-    POINT g_guide_start{};
-    POINT g_guide_end{};
-    int g_guide_step = 0;
 
     struct Palette
     {
@@ -1278,90 +1273,6 @@ namespace
             DestroyWindow(hwnd);
     }
 
-    LRESULT CALLBACK GuideWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
-    {
-        switch (msg)
-        {
-        case WM_CREATE:
-            SetTimer(hwnd, kGuideTimer, kGuideFrameMs, nullptr);
-            return 0;
-        case WM_NCHITTEST:
-            return HTTRANSPARENT;
-        case WM_TIMER:
-            if (wparam == kGuideTimer && ++g_guide_step >= kGuideSteps)
-                DestroyWindow(hwnd);
-            else
-                InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
-        case WM_PAINT:
-        {
-            PAINTSTRUCT ps{};
-            HDC dc = BeginPaint(hwnd, &ps);
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            FillSolidRect(dc, client, RGB(0, 0, 0));
-            int x = g_guide_start.x + MulDiv(g_guide_end.x - g_guide_start.x, g_guide_step, kGuideSteps - 1);
-            int y = g_guide_start.y + MulDiv(g_guide_end.y - g_guide_start.y, g_guide_step, kGuideSteps - 1);
-            HPEN pen = CreatePen(PS_SOLID, std::max(2, DpiScale(2)), P().guide);
-            HGDIOBJ old_pen = SelectObject(dc, pen);
-            MoveToEx(dc, g_guide_start.x, g_guide_start.y, nullptr);
-            LineTo(dc, x, y);
-            SelectObject(dc, old_pen);
-            DeleteObject(pen);
-            HBRUSH brush = CreateSolidBrush(P().guide);
-            HGDIOBJ old_brush = SelectObject(dc, brush);
-            Ellipse(dc, x - S(4), y - S(4), x + S(4), y + S(4));
-            SelectObject(dc, old_brush);
-            DeleteObject(brush);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_DESTROY:
-            if (g_guide_hwnd == hwnd)
-                g_guide_hwnd = nullptr;
-            return 0;
-        default:
-            return DefWindowProcW(hwnd, msg, wparam, lparam);
-        }
-    }
-
-    void StartGuideAnimation(HINSTANCE instance, const RECT &target)
-    {
-        static bool registered = false;
-        if (!registered)
-        {
-            WNDCLASSW wc{};
-            wc.lpfnWndProc = GuideWndProc;
-            wc.hInstance = instance;
-            wc.lpszClassName = L"CodexLimitGuideWindow";
-            registered = RegisterClassW(&wc) != 0;
-        }
-        if (!registered)
-            return;
-
-        if (g_guide_hwnd)
-            DestroyWindow(g_guide_hwnd);
-        POINT from{};
-        GetCursorPos(&from);
-        POINT to{(target.left + target.right) / 2, (target.top + target.bottom) / 2};
-        int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        g_guide_start = {from.x - left, from.y - top};
-        g_guide_end = {to.x - left, to.y - top};
-        g_guide_step = 0;
-        g_guide_hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_TRANSPARENT,
-                                       L"CodexLimitGuideWindow", L"", WS_POPUP, left, top, width, height,
-                                       nullptr, nullptr, instance, nullptr);
-        if (g_guide_hwnd)
-        {
-            SetLayeredWindowAttributes(g_guide_hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
-            ShowWindow(g_guide_hwnd, SW_SHOWNOACTIVATE);
-            UpdateWindow(g_guide_hwnd);
-        }
-    }
-
     // 托盘通知用的消息窗口过程（仅转发默认处理）
     LRESULT CALLBACK NotifyWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     {
@@ -1469,7 +1380,7 @@ namespace
                 DestroyWindow(hwnd);
                 return 0;
             }
-            break;
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
         case WM_TIMER:
             // 定时器：自动刷新
             if (wparam == kRefreshTimer)
@@ -1617,7 +1528,7 @@ int WINAPI wWinMain(
     UpdateWindow(g_hwnd);
     RECT window_rect{};
     GetWindowRect(g_hwnd, &window_rect);
-    StartGuideAnimation(instance, window_rect);
+    codexlimit::startup_animation::Start(instance, window_rect, P().guide);
 
     // 消息循环
     MSG msg{};

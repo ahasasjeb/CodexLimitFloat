@@ -149,6 +149,10 @@
 
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="startup_animation.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="startup_animation.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
