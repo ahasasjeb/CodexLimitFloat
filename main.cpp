@@ -152,8 +152,6 @@ namespace
     int g_shape_width = -1;
     int g_shape_height = -1;
     int g_shape_radius = -1;
-    bool g_dark_mode = false;
-
     struct Palette
     {
         COLORREF bg, panel, border, title, text, muted, soft_text, button, divider, bar, ok, bad, guide;
@@ -161,9 +159,7 @@ namespace
 
     Palette P()
     {
-        return g_dark_mode
-                   ? Palette{RGB(19, 21, 26), RGB(31, 34, 42), RGB(62, 68, 82), RGB(236, 239, 244), RGB(245, 247, 250), RGB(165, 174, 188), RGB(196, 203, 214), RGB(42, 47, 58), RGB(55, 61, 74), RGB(67, 75, 91), RGB(74, 222, 128), RGB(248, 113, 113), RGB(96, 165, 250)}
-                   : Palette{RGB(245, 246, 248), RGB(255, 255, 255), RGB(224, 228, 235), RGB(23, 28, 38), RGB(0, 0, 0), RGB(106, 119, 137), RGB(78, 88, 104), RGB(248, 250, 252), RGB(238, 240, 244), RGB(231, 233, 238), RGB(34, 197, 94), RGB(239, 68, 68), RGB(37, 99, 235)};
+        return Palette{RGB(245, 246, 248), RGB(255, 255, 255), RGB(224, 228, 235), RGB(23, 28, 38), RGB(0, 0, 0), RGB(106, 119, 137), RGB(78, 88, 104), RGB(248, 250, 252), RGB(238, 240, 244), RGB(231, 233, 238), RGB(34, 197, 94), RGB(239, 68, 68), RGB(37, 99, 235)};
     }
 
     // 根据 UI 缩放比例调整数值
@@ -185,14 +181,6 @@ namespace
     void UpdateEffectiveScale()
     {
         g_ui_scale = std::max(45, MulDiv(DpiScale(g_resolution_scale), kCompactScalePercent, 100));
-    }
-
-    bool QueryDarkMode()
-    {
-        DWORD value = 1, size = sizeof(value);
-        RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
-        return value == 0;
     }
 
     // 将 UTF-8 字符串转换为宽字符串（UTF-16）
@@ -1359,17 +1347,6 @@ namespace
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
-        case WM_SETTINGCHANGE:
-        case WM_THEMECHANGED:
-        {
-            bool dark = QueryDarkMode();
-            if (dark != g_dark_mode)
-            {
-                g_dark_mode = dark;
-                InvalidateRect(hwnd, nullptr, TRUE);
-            }
-            return 0;
-        }
         case WM_SIZE:
             // 窗口大小改变：更新形状
             ApplyWindowShape(hwnd);
@@ -1498,7 +1475,6 @@ int WINAPI wWinMain(
     int reference_width = std::min(work_width, MulDiv(work_height, 16, 9));
     g_resolution_scale = std::clamp(MulDiv(reference_width, 100, 1366), 85, 125);
     UpdateEffectiveScale();
-    g_dark_mode = QueryDarkMode();
 
     // 初始化临界区
     InitializeCriticalSection(&g_state_lock);
