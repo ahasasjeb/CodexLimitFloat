@@ -15,15 +15,69 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="app_types.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="config_auth.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="file_utils.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="http_client.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="json_utils.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="main.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="relay_key.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="startup_animation.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="text_utils.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ui_render.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="usage_service.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="app_types.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="config_auth.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="file_utils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="http_client.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="json_utils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="relay_key.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="startup_animation.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="text_utils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ui_render.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="usage_service.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="resource.h">

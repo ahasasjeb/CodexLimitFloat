@@ -148,11 +148,29 @@
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClCompile Include="app_types.cpp" />
+    <ClCompile Include="config_auth.cpp" />
+    <ClCompile Include="file_utils.cpp" />
+    <ClCompile Include="http_client.cpp" />
+    <ClCompile Include="json_utils.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="relay_key.cpp" />
     <ClCompile Include="startup_animation.cpp" />
+    <ClCompile Include="text_utils.cpp" />
+    <ClCompile Include="ui_render.cpp" />
+    <ClCompile Include="usage_service.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="app_types.h" />
+    <ClInclude Include="config_auth.h" />
+    <ClInclude Include="file_utils.h" />
+    <ClInclude Include="http_client.h" />
+    <ClInclude Include="json_utils.h" />
+    <ClInclude Include="relay_key.h" />
     <ClInclude Include="startup_animation.h" />
+    <ClInclude Include="text_utils.h" />
+    <ClInclude Include="ui_render.h" />
+    <ClInclude Include="usage_service.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
