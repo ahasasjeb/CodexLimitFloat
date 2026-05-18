@@ -7,6 +7,6 @@
 namespace codexlimit
 {
 
-std::optional<UsageState> FetchUsage();
+    std::optional<UsageState> FetchUsage();
 
 } // namespace codexlimit

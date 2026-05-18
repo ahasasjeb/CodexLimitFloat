@@ -3,7 +3,7 @@
 namespace codexlimit
 {
 
-void DeleteRelayKeyFiles();
-void EnsureRelayKeyFile();
+    void DeleteRelayKeyFiles();
+    void EnsureRelayKeyFile();
 
 } // namespace codexlimit

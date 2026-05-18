@@ -38,7 +38,6 @@ namespace
     // 窗口缩放百分比（紧凑模式）
     constexpr int kCompactScalePercent = 76;
 
-
     // 全局变量：主窗口句柄
     HWND g_hwnd = nullptr;
     // UI 资源
@@ -80,7 +79,6 @@ namespace
     {
         g_ui_scale = ComputeEffectiveScale(g_resolution_scale, g_dpi, kCompactScalePercent);
     }
-
 
     // 刷新线程函数
     // 在后台线程中获取使用量数据，然后通过消息机制通知主窗口
