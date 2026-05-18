@@ -58,6 +58,7 @@ namespace
         Updated,      // 已更新
         NoWindow,     // 没有检测到限额窗口
         ReadFailed,   // 读取失败
+        RelayAuthRemoved, // 转发服务器判定认证无效
         ThreadFailed, // 刷新线程启动失败
     };
 
@@ -67,6 +68,7 @@ namespace
     constexpr const wchar_t *kStatusUpdated = L"已更新";
     constexpr const wchar_t *kStatusNoWindow = L"usage 返回中没有限额窗口";
     constexpr const wchar_t *kStatusReadFailed = L"读取失败：请确认已用 ChatGPT/Codex backend 登录";
+    constexpr const wchar_t *kStatusRelayAuthRemoved = L"警告：24小时内向 OpenAI 请求失败 2 次，已判定无效并删除转发密钥，请重新启动程序";
     constexpr const wchar_t *kStatusThreadFailed = L"刷新线程启动失败";
 
     // 根据状态码返回对应的显示文本
@@ -84,6 +86,8 @@ namespace
             return kStatusNoWindow;
         case StatusCode::ReadFailed:
             return kStatusReadFailed;
+        case StatusCode::RelayAuthRemoved:
+            return kStatusRelayAuthRemoved;
         case StatusCode::ThreadFailed:
             return kStatusThreadFailed;
         default:
@@ -141,6 +145,7 @@ namespace
     bool g_refresh_running = false;
     // 程序正在关闭标志
     bool g_shutting_down = false;
+    bool g_relay_auth_removed_notice_shown = false;
     // 刷新线程句柄
     HANDLE g_refresh_thread = nullptr;
     // 单实例互斥体，防止程序多次运行
@@ -305,6 +310,25 @@ namespace
                              "  \"api_key\": \"填入你的转发服务器密钥\",\n"
                              "  \"one_way_key\": \"填入单向加密密钥\"\n"
                              "}\n");
+    }
+
+    void DeleteRelayKeyFileAt(const std::wstring &dir)
+    {
+        if (dir.empty())
+            return;
+        std::wstring path = JoinPath(dir, kRelayKeyFileName);
+        DWORD attrs = GetFileAttributesW(path.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+            DeleteFileW(path.c_str());
+    }
+
+    void DeleteRelayKeyFiles()
+    {
+        std::wstring exe_dir = GetExecutableDirectoryPath();
+        std::wstring current_dir = GetCurrentDirectoryPath();
+        DeleteRelayKeyFileAt(exe_dir);
+        if (current_dir != exe_dir)
+            DeleteRelayKeyFileAt(current_dir);
     }
 
     // 程序启动时生成转发服务器密钥配置模板
@@ -1010,6 +1034,22 @@ namespace
         out.reset_at = JsonNumberValue(obj, "reset_at").value_or(0);
     }
 
+    bool IsRelayAuthRemovedResponse(const std::optional<HttpResponse> &response)
+    {
+        return response &&
+               response->status == 498 &&
+               JsonStringValue(response->body, "error") == "usage_auth_removed";
+    }
+
+    UsageState RelayAuthRemovedState()
+    {
+        DeleteRelayKeyFiles();
+        UsageState state;
+        state.ok = false;
+        state.status = StatusCode::RelayAuthRemoved;
+        return state;
+    }
+
     // 获取使用量状态
     // 发送 HTTP 请求获取 Codex 使用限额信息
     std::optional<UsageState> FetchUsage()
@@ -1029,6 +1069,8 @@ namespace
         auto response = HttpRequestOfficialFirst(L"GET", BuildUsageUrl(cfg), headers);
         if (!response)
             return std::nullopt;
+        if (IsRelayAuthRemovedResponse(response))
+            return RelayAuthRemovedState();
         // 如果认证失败，尝试刷新令牌后重试
         if ((response->status == 401 || response->status == 403) && RefreshAuth(cfg, *auth))
         {
@@ -1037,6 +1079,8 @@ namespace
                 headers += L"ChatGPT-Account-ID: " + auth->account_id + L"\r\n";
             headers += L"User-Agent: CodexLimitFloat/1.0\r\n";
             response = HttpRequestOfficialFirst(L"GET", BuildUsageUrl(cfg), headers);
+            if (IsRelayAuthRemovedResponse(response))
+                return RelayAuthRemovedState();
         }
         if (!response || response->status < 200 || response->status >= 300)
             return std::nullopt;
@@ -1519,11 +1563,17 @@ namespace
         case kRefreshDoneMessage:
         {
             // 刷新完成消息：更新状态
+            bool show_relay_auth_removed_notice = false;
             EnterCriticalSection(&g_state_lock);
             if (g_has_pending_state)
             {
                 g_state = g_pending_state;
                 g_has_pending_state = false;
+            }
+            if (g_state.status == StatusCode::RelayAuthRemoved && !g_relay_auth_removed_notice_shown)
+            {
+                g_relay_auth_removed_notice_shown = true;
+                show_relay_auth_removed_notice = true;
             }
             g_refresh_running = false;
             if (g_refresh_thread)
@@ -1533,6 +1583,15 @@ namespace
             }
             LeaveCriticalSection(&g_state_lock);
             InvalidateRect(hwnd, nullptr, TRUE);
+            if (show_relay_auth_removed_notice)
+            {
+                MessageBoxW(hwnd,
+                            L"24小时内向 OpenAI 请求失败了 2 次，服务端已判定当前转发认证无效。\n\n"
+                            L"程序已删除 relay_server_key.json。\n\n"
+                            L"请重新填写密钥后重新启动程序。",
+                            L"Codex 限额警告",
+                            MB_OK | MB_ICONWARNING);
+            }
             return 0;
         }
         case WM_CREATE:
