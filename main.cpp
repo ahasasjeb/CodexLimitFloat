@@ -302,7 +302,8 @@ namespace
         return WriteFileUtf8(path,
                              "{\n"
                              "  \"server_url\": \"https://your-domain.example/api/codex-relay\",\n"
-                             "  \"api_key\": \"填入你的转发服务器密钥\"\n"
+                             "  \"api_key\": \"填入你的转发服务器密钥\",\n"
+                             "  \"one_way_key\": \"填入单向加密密钥\"\n"
                              "}\n");
     }
 
@@ -888,13 +889,17 @@ namespace
                                                                "  \"headers\": \"" +
                                   JsonEscape(WideToUtf8(headers)) + "\",\n"
                                                                    "  \"body\": \"" +
-                                  JsonEscape(body) + "\"\n"
-                                                     "}\n";
+                                  JsonEscape(body) + "\",\n"
+                                                     "  \"one_way_key\": \"" +
+                                  JsonEscape(WideToUtf8(one_way_key_)) + "\"\n"
+                                                                    "}\n";
             std::wstring relay_headers = L"Content-Type: application/json\r\n"
                                          L"Authorization: Bearer " +
                                          api_key_ + L"\r\n"
                                                     L"X-Codex-Relay-Key: " +
                                          api_key_ + L"\r\n"
+                                                    L"X-Codex-One-Way-Key: " +
+                                         one_way_key_ + L"\r\n"
                                                     L"User-Agent: CodexLimitFloat/1.0\r\n";
 
             auto relay_response = HttpRequest(L"POST", server_url_, relay_headers, payload);
@@ -907,6 +912,7 @@ namespace
     private:
         std::wstring server_url_;
         std::wstring api_key_;
+        std::wstring one_way_key_;
 
         void LoadLocalKeyFile()
         {
@@ -919,18 +925,24 @@ namespace
 
             std::wstring server_url = Utf8ToWide(JsonStringValue(*data, "server_url"));
             std::wstring api_key = Utf8ToWide(JsonStringValue(*data, "api_key"));
+            std::wstring one_way_key = Utf8ToWide(JsonStringValue(*data, "one_way_key"));
             if (server_url.empty() || api_key.empty())
                 return;
             if (server_url.find(L"your-domain.example") != std::wstring::npos ||
                 api_key.find(L"填入") != std::wstring::npos ||
                 api_key.find(L'\r') != std::wstring::npos ||
-                api_key.find(L'\n') != std::wstring::npos)
+                api_key.find(L'\n') != std::wstring::npos ||
+                one_way_key.find(L'\r') != std::wstring::npos ||
+                one_way_key.find(L'\n') != std::wstring::npos)
             {
                 return;
             }
+            if (one_way_key.find(L"填入") != std::wstring::npos)
+                one_way_key.clear();
 
             server_url_ = server_url;
             api_key_ = api_key;
+            one_way_key_ = one_way_key;
         }
 
         std::optional<HttpResponse> DecodeRelayResponse(const HttpResponse &relay_response) const
