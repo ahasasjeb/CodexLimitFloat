@@ -8,6 +8,7 @@
 #include <shellscalingapi.h>
 
 #include "startup_animation.h"
+#include "resource.h"
 
 #include <algorithm>
 #include <cctype>
@@ -34,6 +35,8 @@ namespace
     constexpr int kHttpTimeoutMs = 3000;
     // 自定义消息：刷新完成通知
     constexpr UINT kRefreshDoneMessage = WM_APP + 1;
+    constexpr UINT kTrayIconMessage = WM_APP + 2;
+    constexpr UINT kTrayIconId = 1;
     // 窗口缩放百分比（紧凑模式）
     constexpr int kCompactScalePercent = 76;
 
@@ -144,6 +147,7 @@ namespace
     // 待处理的刷新状态（用于跨线程传递数据）
     UsageState g_pending_state;
     bool g_has_pending_state = false;
+    bool g_tray_icon_added = false;
     // UI 缩放相关变量
     int g_ui_scale = 100;         // UI 缩放比例
     int g_resolution_scale = 100; // 分辨率缩放比例
@@ -1257,8 +1261,48 @@ namespace
         SetForegroundWindow(hwnd);
         UINT cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, screen.x, screen.y, 0, hwnd, nullptr);
         DestroyMenu(menu);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         if (cmd == kExitCommand)
             DestroyWindow(hwnd);
+    }
+
+    HICON LoadAppIcon(HINSTANCE instance, int size)
+    {
+        return static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+    }
+
+    void FillTrayIconData(HWND hwnd, NOTIFYICONDATAW &nid)
+    {
+        nid = {};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd;
+        nid.uID = kTrayIconId;
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uCallbackMessage = kTrayIconMessage;
+        nid.hIcon = LoadAppIcon(reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd, GWLP_HINSTANCE)), GetSystemMetrics(SM_CXSMICON));
+        wcscpy_s(nid.szTip, L"Codex 限额");
+    }
+
+    void AddTrayIcon(HWND hwnd)
+    {
+        NOTIFYICONDATAW nid{};
+        FillTrayIconData(hwnd, nid);
+        g_tray_icon_added = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+        if (nid.hIcon)
+            DestroyIcon(nid.hIcon);
+    }
+
+    void DeleteTrayIcon(HWND hwnd)
+    {
+        if (!g_tray_icon_added)
+            return;
+
+        NOTIFYICONDATAW nid{};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd;
+        nid.uID = kTrayIconId;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+        g_tray_icon_added = false;
     }
 
     // 托盘通知用的消息窗口过程（仅转发默认处理）
@@ -1287,8 +1331,8 @@ namespace
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        nid.uCallbackMessage = WM_APP + 2;
-        nid.hIcon = LoadIconW(nullptr, IDI_WARNING);
+        nid.uCallbackMessage = kTrayIconMessage;
+        nid.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON));
         wcscpy_s(nid.szTip, L"Codex 限额");
         if (Shell_NotifyIconW(NIM_ADD, &nid))
         {
@@ -1300,6 +1344,8 @@ namespace
             Sleep(3500);
             Shell_NotifyIconW(NIM_DELETE, &nid);
         }
+        if (nid.hIcon)
+            DestroyIcon(nid.hIcon);
         DestroyWindow(hwnd);
     }
 
@@ -1331,7 +1377,24 @@ namespace
             // 窗口创建：初始化
             CreateFonts();
             ApplyWindowShape(hwnd);
+            AddTrayIcon(hwnd);
             SetTimer(hwnd, kRefreshTimer, kInitialRefreshDelayMs, nullptr);
+            return 0;
+        case kTrayIconMessage:
+            if (LOWORD(lparam) == WM_RBUTTONUP || LOWORD(lparam) == WM_CONTEXTMENU)
+            {
+                POINT pt{};
+                if (LOWORD(lparam) == WM_CONTEXTMENU)
+                {
+                    pt = {GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)};
+                }
+                else
+                {
+                    GetCursorPos(&pt);
+                }
+                ShowExitMenu(hwnd, pt);
+                return 0;
+            }
             return 0;
         case WM_DPICHANGED:
         {
@@ -1412,6 +1475,7 @@ namespace
         case WM_DESTROY:
         {
             // 窗口销毁：清理资源
+            DeleteTrayIcon(hwnd);
             EnterCriticalSection(&g_state_lock);
             g_shutting_down = true;
             HANDLE thread = g_refresh_thread;
@@ -1485,6 +1549,7 @@ int WINAPI wWinMain(
     wc.hInstance = instance;
     wc.lpszClassName = L"CodexLimitFloatWindow";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON));
     RegisterClassW(&wc);
 
     // 计算窗口位置和大小
@@ -1500,6 +1565,12 @@ int WINAPI wWinMain(
                              WS_POPUP, x, y, width, height, nullptr, nullptr, instance, nullptr);
     if (!g_hwnd)
         return 1;
+    HICON big_icon = LoadAppIcon(instance, GetSystemMetrics(SM_CXICON));
+    HICON small_icon = LoadAppIcon(instance, GetSystemMetrics(SM_CXSMICON));
+    if (big_icon)
+        SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big_icon));
+    if (small_icon)
+        SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_icon));
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
     RECT window_rect{};
@@ -1516,6 +1587,10 @@ int WINAPI wWinMain(
 
     // 清理资源
     DeleteCriticalSection(&g_state_lock);
+    if (big_icon)
+        DestroyIcon(big_icon);
+    if (small_icon)
+        DestroyIcon(small_icon);
     CloseHandle(g_single_instance_mutex);
     return 0;
 }
