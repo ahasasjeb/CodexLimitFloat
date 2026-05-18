@@ -3,3 +3,5 @@
 /x64
 /.vscode
 /dist
+/relay_server_key.json
+NEXTJS_AUTH_RELAY_INTEGRATION.md

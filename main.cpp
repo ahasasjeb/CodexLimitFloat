@@ -37,6 +37,7 @@ namespace
     constexpr UINT kRefreshDoneMessage = WM_APP + 1;
     constexpr UINT kTrayIconMessage = WM_APP + 2;
     constexpr UINT kTrayIconId = 1;
+    constexpr const wchar_t *kRelayKeyFileName = L"relay_server_key.json";
     // 窗口缩放百分比（紧凑模式）
     constexpr int kCompactScalePercent = 76;
 
@@ -229,6 +230,32 @@ namespace
         return base;
     }
 
+    // 获取当前工作目录，用于读取转发服务器密钥配置
+    std::wstring GetCurrentDirectoryPath()
+    {
+        DWORD size = GetCurrentDirectoryW(0, nullptr);
+        if (size == 0)
+            return L"";
+        std::wstring path(size, L'\0');
+        GetCurrentDirectoryW(size, path.data());
+        path.resize(size - 1);
+        return path;
+    }
+
+    // 获取 exe 所在目录；转发服务器密钥文件随程序同级放置
+    std::wstring GetExecutableDirectoryPath()
+    {
+        wchar_t path[MAX_PATH]{};
+        DWORD length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
+        if (length == 0 || length >= ARRAYSIZE(path))
+            return GetCurrentDirectoryPath();
+        std::wstring exe_path(path, length);
+        size_t slash = exe_path.find_last_of(L"\\/");
+        if (slash == std::wstring::npos)
+            return GetCurrentDirectoryPath();
+        return exe_path.substr(0, slash);
+    }
+
     // 读取 UTF-8 编码的文件内容
     std::optional<std::string> ReadFileUtf8(const std::wstring &path)
     {
@@ -261,6 +288,24 @@ namespace
         BOOL ok = WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &written, nullptr);
         CloseHandle(file);
         return ok && written == data.size();
+    }
+
+    // 程序启动时在 exe 同级目录生成转发服务器密钥配置模板
+    void EnsureRelayKeyFile()
+    {
+        std::wstring dir = GetExecutableDirectoryPath();
+        if (dir.empty())
+            return;
+        std::wstring path = JoinPath(dir, kRelayKeyFileName);
+        DWORD attrs = GetFileAttributesW(path.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+            return;
+
+        WriteFileUtf8(path,
+                      "{\n"
+                      "  \"server_url\": \"https://your-domain.example/api/codex-relay\",\n"
+                      "  \"api_key\": \"填入你的转发服务器密钥\"\n"
+                      "}\n");
     }
 
     // 在 JSON 字符串中查找指定键的位置
@@ -811,6 +856,106 @@ namespace
         return response;
     }
 
+    // 连接负责转发请求的服务器。只有直连官方接口失败时才会使用。
+    class RelayForwardClient
+    {
+    public:
+        RelayForwardClient()
+        {
+            LoadLocalKeyFile();
+        }
+
+        bool Enabled() const
+        {
+            return !server_url_.empty() && !api_key_.empty();
+        }
+
+        std::optional<HttpResponse> Forward(const std::wstring &method, const std::wstring &url, const std::wstring &headers, const std::string &body) const
+        {
+            if (!Enabled())
+                return std::nullopt;
+
+            std::string payload = "{\n"
+                                  "  \"method\": \"" +
+                                  JsonEscape(WideToUtf8(method)) + "\",\n"
+                                                                  "  \"url\": \"" +
+                                  JsonEscape(WideToUtf8(url)) + "\",\n"
+                                                               "  \"headers\": \"" +
+                                  JsonEscape(WideToUtf8(headers)) + "\",\n"
+                                                                   "  \"body\": \"" +
+                                  JsonEscape(body) + "\"\n"
+                                                     "}\n";
+            std::wstring relay_headers = L"Content-Type: application/json\r\n"
+                                         L"Authorization: Bearer " +
+                                         api_key_ + L"\r\n"
+                                                    L"X-Codex-Relay-Key: " +
+                                         api_key_ + L"\r\n"
+                                                    L"User-Agent: CodexLimitFloat/1.0\r\n";
+
+            auto relay_response = HttpRequest(L"POST", server_url_, relay_headers, payload);
+            if (!relay_response)
+                return std::nullopt;
+
+            return DecodeRelayResponse(*relay_response);
+        }
+
+    private:
+        std::wstring server_url_;
+        std::wstring api_key_;
+
+        void LoadLocalKeyFile()
+        {
+            std::wstring dir = GetExecutableDirectoryPath();
+            if (dir.empty())
+                return;
+            auto data = ReadFileUtf8(JoinPath(dir, kRelayKeyFileName));
+            if (!data)
+                return;
+
+            std::wstring server_url = Utf8ToWide(JsonStringValue(*data, "server_url"));
+            std::wstring api_key = Utf8ToWide(JsonStringValue(*data, "api_key"));
+            if (server_url.empty() || api_key.empty())
+                return;
+            if (server_url.find(L"your-domain.example") != std::wstring::npos ||
+                api_key.find(L"填入") != std::wstring::npos ||
+                api_key.find(L'\r') != std::wstring::npos ||
+                api_key.find(L'\n') != std::wstring::npos)
+            {
+                return;
+            }
+
+            server_url_ = server_url;
+            api_key_ = api_key;
+        }
+
+        std::optional<HttpResponse> DecodeRelayResponse(const HttpResponse &relay_response) const
+        {
+            if (FindJsonKey(relay_response.body, "status") != std::string_view::npos &&
+                FindJsonKey(relay_response.body, "body") != std::string_view::npos)
+            {
+                auto status = JsonNumberValue(relay_response.body, "status");
+                if (status)
+                {
+                    HttpResponse forwarded;
+                    forwarded.status = static_cast<DWORD>(*status);
+                    forwarded.body = JsonStringValue(relay_response.body, "body");
+                    return forwarded;
+                }
+            }
+            return relay_response;
+        }
+    };
+
+    std::optional<HttpResponse> HttpRequestOfficialFirst(const std::wstring &method, const std::wstring &url, const std::wstring &headers, const std::string &body = {})
+    {
+        auto response = HttpRequest(method, url, headers, body);
+        if (response)
+            return response;
+
+        RelayForwardClient relay;
+        return relay.Forward(method, url, headers, body);
+    }
+
     // 刷新访问令牌
     bool RefreshAuth(const AppConfig &cfg, AuthTokens &tokens)
     {
@@ -820,7 +965,7 @@ namespace
         std::string body = "{\"client_id\":\"app_EMoamEEZ73f0CkXaXp7hrann\",\"grant_type\":\"refresh_token\",\"refresh_token\":\"" +
                            JsonEscape(refresh) + "\"}";
         std::wstring headers = L"Content-Type: application/json\r\nUser-Agent: CodexLimitFloat/1.0\r\n";
-        auto response = HttpRequest(L"POST", L"https://auth.openai.com/oauth/token", headers, body);
+        auto response = HttpRequestOfficialFirst(L"POST", L"https://auth.openai.com/oauth/token", headers, body);
         if (!response || response->status < 200 || response->status >= 300)
             return false;
         std::wstring new_access = Utf8ToWide(JsonStringValue(response->body, "access_token"));
@@ -864,7 +1009,7 @@ namespace
         headers += L"User-Agent: CodexLimitFloat/1.0\r\n";
 
         // 发送请求
-        auto response = HttpRequest(L"GET", BuildUsageUrl(cfg), headers);
+        auto response = HttpRequestOfficialFirst(L"GET", BuildUsageUrl(cfg), headers);
         if (!response)
             return std::nullopt;
         // 如果认证失败，尝试刷新令牌后重试
@@ -874,7 +1019,7 @@ namespace
             if (!auth->account_id.empty())
                 headers += L"ChatGPT-Account-ID: " + auth->account_id + L"\r\n";
             headers += L"User-Agent: CodexLimitFloat/1.0\r\n";
-            response = HttpRequest(L"GET", BuildUsageUrl(cfg), headers);
+            response = HttpRequestOfficialFirst(L"GET", BuildUsageUrl(cfg), headers);
         }
         if (!response || response->status < 200 || response->status >= 300)
             return std::nullopt;
@@ -1522,6 +1667,8 @@ int WINAPI wWinMain(
             CloseHandle(g_single_instance_mutex);
         return 0;
     }
+
+    EnsureRelayKeyFile();
 
     // 检查屏幕分辨率是否足够
     RECT work_area{};
