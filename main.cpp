@@ -290,22 +290,27 @@ namespace
         return ok && written == data.size();
     }
 
-    // 程序启动时在 exe 同级目录生成转发服务器密钥配置模板
-    void EnsureRelayKeyFile()
+    bool EnsureRelayKeyFileAt(const std::wstring &dir)
     {
-        std::wstring dir = GetExecutableDirectoryPath();
         if (dir.empty())
-            return;
+            return false;
         std::wstring path = JoinPath(dir, kRelayKeyFileName);
         DWORD attrs = GetFileAttributesW(path.c_str());
         if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
-            return;
+            return true;
 
-        WriteFileUtf8(path,
-                      "{\n"
-                      "  \"server_url\": \"https://your-domain.example/api/codex-relay\",\n"
-                      "  \"api_key\": \"填入你的转发服务器密钥\"\n"
-                      "}\n");
+        return WriteFileUtf8(path,
+                             "{\n"
+                             "  \"server_url\": \"https://your-domain.example/api/codex-relay\",\n"
+                             "  \"api_key\": \"填入你的转发服务器密钥\"\n"
+                             "}\n");
+    }
+
+    // 程序启动时生成转发服务器密钥配置模板
+    void EnsureRelayKeyFile()
+    {
+        EnsureRelayKeyFileAt(GetExecutableDirectoryPath());
+        EnsureRelayKeyFileAt(GetCurrentDirectoryPath());
     }
 
     // 在 JSON 字符串中查找指定键的位置
@@ -1659,6 +1664,8 @@ int WINAPI wWinMain(
     SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
     g_dpi = GetDpiForSystem();
 
+    EnsureRelayKeyFile();
+
     // 确保单实例运行
     g_single_instance_mutex = CreateMutexW(nullptr, TRUE, L"Local\\CodexLimitFloatSingleInstance");
     if (!g_single_instance_mutex || GetLastError() == ERROR_ALREADY_EXISTS)
@@ -1667,8 +1674,6 @@ int WINAPI wWinMain(
             CloseHandle(g_single_instance_mutex);
         return 0;
     }
-
-    EnsureRelayKeyFile();
 
     // 检查屏幕分辨率是否足够
     RECT work_area{};
